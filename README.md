@@ -6,7 +6,8 @@
 
 <p align="center">
   An MCP server for the Instagram Graph API.<br/>
-  Publish, message, monitor — across multiple accounts.<br/>
+  Photos, carousels, Reels, Stories, video. DMs. Comments. Insights.<br/>
+  Across multiple accounts.<br/>
   <strong>The endless loop, on your terms.</strong>
 </p>
 
@@ -18,13 +19,17 @@
 
 The serpent eats her tail. The platform's content cycle is endless and so is the rhythm of working it: post, reply, monitor, post again. Ouroboros wraps Meta's Graph API so the cycle runs through Claude Code instead of a browser tab and a phone. The lotus crown on the mark is the reminder: you sit above the loop, not inside it.
 
+> [!important] **URLs, not local files.**
+> Instagram's Graph API does not accept local file uploads from the publishing endpoints. Every `publish_*` tool here takes a **publicly accessible URL** as input. Host your media somewhere reachable (S3, Cloudflare R2, your own CDN, a public bucket) and pass the URL. This is a Meta limitation, not an Ouroboros one. If your asset is on disk, upload it to a host first.
+
 ## Features
 
-- Publish single photos and carousels
-- Read and send DMs
-- Read and reply to comments
+- Publish **photos**, **carousels**, **Reels**, **Stories**, and **feed video**
+- Read and send **DMs**
+- Read and reply to **comments**
+- Pull **post insights** (per-post metrics) and **account insights** (account-level metrics)
 - Fetch account info and recent posts
-- Multi-account support, configure any number of accounts via env vars, no code changes
+- **Multi-account support**, configure any number of accounts via env vars, no code changes
 
 ## Requirements
 
@@ -100,25 +105,64 @@ Restart Claude Code. Tools appear under the `mcp__ouroboros__*` namespace.
 
 ## Tools
 
+Fourteen tools across publishing, messaging, comments, and insights. All take an `account` parameter matching one of your configured account keys.
+
+### Account
+
 | Tool | Description |
 |---|---|
 | `get_account_info` | Profile info, follower count, bio |
-| `get_recent_posts` | Recent media with likes and comments count |
-| `publish_photo` | Publish a single image post |
-| `publish_carousel` | Publish a multi-image carousel (2 to 10 images) |
+| `get_recent_posts` | Recent media with likes and comments counts |
+| `get_account_insights` | Account-level metrics (reach, profile views, follower count, website clicks) over a window |
+
+### Publishing
+
+| Tool | Description |
+|---|---|
+| `publish_photo` | Single image post |
+| `publish_carousel` | Multi-image carousel (2 to 10 images) |
+| `publish_video` | Feed video post (MP4 URL). Async, waits up to 90s for Meta to process. |
+| `publish_reel` | Reel (MP4 URL). Async. `share_to_feed` defaults true. |
+| `publish_story` | Story, either image or video. Async for video stories. |
+
+### Comments and DMs
+
+| Tool | Description |
+|---|---|
+| `get_post_comments` | Comments on a post, including replies |
+| `reply_to_comment` | Reply to a specific comment |
 | `get_conversations` | List DM conversations |
 | `get_messages` | Messages within a conversation |
 | `send_message` | Send a DM to a user |
-| `get_post_comments` | Comments on a post, including replies |
-| `reply_to_comment` | Reply to a specific comment |
 
-All tools take an `account` parameter matching one of your configured account keys.
+### Insights
+
+| Tool | Description |
+|---|---|
+| `get_post_insights` | Per-post metrics (reach, impressions, saved, likes, comments, shares, total interactions) |
+| `get_account_insights` | Account-level metrics over a window (also listed under Account) |
+
+## Format and size constraints
+
+Meta enforces format and size limits on the publishing endpoints. Ouroboros passes your URL through, so check your media against these before publishing:
+
+| Tool | Format | Aspect | Duration | Notes |
+|---|---|---|---|---|
+| `publish_photo` | JPEG, PNG | 4:5 to 1.91:1 | — | Min 320px, max 1440px wide |
+| `publish_carousel` | JPEG, PNG | 4:5 to 1.91:1 | — | 2 to 10 images, all same aspect |
+| `publish_video` | MP4, MOV (H.264 / AAC) | 4:5 to 16:9 | Up to 60 min | 30fps recommended |
+| `publish_reel` | MP4 (H.264 / AAC) | 9:16 | Up to 90s | 30fps recommended, min 720x1280 |
+| `publish_story` (image) | JPEG, PNG | 9:16 recommended | — | — |
+| `publish_story` (video) | MP4 (H.264 / AAC) | 9:16 recommended | Up to 60s | — |
 
 ## Notes
 
-- Images must be publicly accessible URLs for publishing
-- DM sending requires `instagram_manage_messages`, works in dev mode for accounts added as app testers, requires Meta app review for general use
-- Long-lived tokens expire after 60 days and need to be refreshed
+- **Publishing takes URLs, not files.** Repeated from above because it bites everyone once. Local file uploads are not supported by Meta's publishing endpoints. Host your asset somewhere reachable and pass the URL.
+- **Async publishing.** `publish_video`, `publish_reel`, and `publish_story` (video) wait up to 90 seconds for Meta to process the upload. Larger files may need a longer wait; if you hit the timeout the container often finishes anyway and you can retry the publish step.
+- **Errors come back inline.** When Meta rejects a call (bad URL, expired token, missing permission, format mismatch), the error message and code surface in the tool's response. No silent failures.
+- **DM sending** requires `instagram_manage_messages`. Works in dev mode for accounts added as app testers; requires Meta app review for general use.
+- **Insights** requires `instagram_manage_insights`. Some newer account metrics need `metric_type=total_value` and a `period`; pass these through if the docs call for them.
+- **Long-lived tokens** expire after 60 days. Refresh via `https://graph.instagram.com/refresh_access_token?grant_type=ig_refresh_token&access_token=...` or rotate from the Meta dashboard.
 
 ## Design philosophy
 

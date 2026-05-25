@@ -1,7 +1,7 @@
 {
   "name": "ouroboros-mcp",
-  "version": "1.1.0",
-  "description": "Ouroboros: an MCP server for the Instagram Graph API. Publish posts, manage DMs, monitor comments across multiple accounts.",
+  "version": "1.2.0",
+  "description": "Ouroboros: an MCP server for the Instagram Graph API. Photos, carousels, Reels, Stories, video, DMs, comments, and insights across multiple accounts.",
   "main": "index.js",
   "type": "module",
   "scripts": {

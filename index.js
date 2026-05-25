@@ -152,6 +152,112 @@ async function replyToComment(key, commentId, message) {
   });
 }
 
+// ─── Async container helper (video, reels, story) ─────────────────────────────
+
+async function waitForContainer(creationId, accessToken, { maxWaitMs = 90000, pollMs = 3000 } = {}) {
+  const start = Date.now();
+  let last;
+  while (Date.now() - start < maxWaitMs) {
+    last = await graph(`/${creationId}`, 'GET', {
+      fields: 'status_code,status',
+      access_token: accessToken,
+    });
+    if (last.status_code === 'FINISHED') return last;
+    if (last.status_code === 'ERROR' || last.status_code === 'EXPIRED') {
+      throw new Error(`Container ${last.status_code}: ${last.status || 'no detail'}`);
+    }
+    await new Promise(r => setTimeout(r, pollMs));
+  }
+  throw new Error(`Container did not finish within ${maxWaitMs / 1000}s. Last status: ${last && last.status_code}`);
+}
+
+// ─── Video, Reels, Stories publishing ─────────────────────────────────────────
+
+async function publishVideo(key, videoUrl, caption = '', coverUrl) {
+  const { accessToken, userId } = getAccount(key);
+  const params = {
+    media_type: 'VIDEO',
+    video_url: videoUrl,
+    caption,
+    access_token: accessToken,
+  };
+  if (coverUrl) params.cover_url = coverUrl;
+  const container = await graph(`/${userId}/media`, 'POST', params);
+  await waitForContainer(container.id, accessToken);
+  const result = await graph(`/${userId}/media_publish`, 'POST', {
+    creation_id: container.id,
+    access_token: accessToken,
+  });
+  return { success: true, post_id: result.id, type: 'video', caption, video_url: videoUrl };
+}
+
+async function publishReel(key, videoUrl, caption = '', coverUrl, shareToFeed = true) {
+  const { accessToken, userId } = getAccount(key);
+  const params = {
+    media_type: 'REELS',
+    video_url: videoUrl,
+    caption,
+    share_to_feed: shareToFeed,
+    access_token: accessToken,
+  };
+  if (coverUrl) params.cover_url = coverUrl;
+  const container = await graph(`/${userId}/media`, 'POST', params);
+  await waitForContainer(container.id, accessToken);
+  const result = await graph(`/${userId}/media_publish`, 'POST', {
+    creation_id: container.id,
+    access_token: accessToken,
+  });
+  return { success: true, post_id: result.id, type: 'reel', caption, video_url: videoUrl, share_to_feed: shareToFeed };
+}
+
+async function publishStory(key, { imageUrl, videoUrl }) {
+  const { accessToken, userId } = getAccount(key);
+  if (!imageUrl && !videoUrl) throw new Error('Either image_url or video_url is required for a story.');
+  if (imageUrl && videoUrl) throw new Error('Provide image_url or video_url, not both.');
+  const params = {
+    media_type: 'STORIES',
+    access_token: accessToken,
+  };
+  if (imageUrl) params.image_url = imageUrl;
+  if (videoUrl) params.video_url = videoUrl;
+  const container = await graph(`/${userId}/media`, 'POST', params);
+  if (videoUrl) await waitForContainer(container.id, accessToken);
+  const result = await graph(`/${userId}/media_publish`, 'POST', {
+    creation_id: container.id,
+    access_token: accessToken,
+  });
+  return { success: true, post_id: result.id, type: 'story', media_type: imageUrl ? 'image' : 'video' };
+}
+
+// ─── Insights ─────────────────────────────────────────────────────────────────
+
+async function getPostInsights(key, postId, metrics) {
+  const { accessToken } = getAccount(key);
+  const metric = metrics && metrics.length
+    ? metrics.join(',')
+    : 'reach,impressions,saved,likes,comments,shares,total_interactions';
+  return graph(`/${postId}/insights`, 'GET', {
+    metric,
+    access_token: accessToken,
+  });
+}
+
+async function getAccountInsights(key, { metrics, period = 'day', metric_type, since, until } = {}) {
+  const { accessToken, userId } = getAccount(key);
+  const metric = metrics && metrics.length
+    ? metrics.join(',')
+    : 'reach,profile_views,follower_count,website_clicks';
+  const params = {
+    metric,
+    period,
+    access_token: accessToken,
+  };
+  if (metric_type) params.metric_type = metric_type;
+  if (since) params.since = since;
+  if (until) params.until = until;
+  return graph(`/${userId}/insights`, 'GET', params);
+}
+
 // ─── Tool definitions ─────────────────────────────────────────────────────────
 
 const accountNames = Object.keys(ACCOUNTS).join(', ');
@@ -274,12 +380,83 @@ const TOOLS = [
       required: ['account', 'comment_id', 'message'],
     },
   },
+  {
+    name: 'publish_video',
+    description: 'Publish a feed video post. video_url must be a publicly accessible MP4. Async: waits up to 90s for Meta to process the upload.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        account: { type: 'string', description: accountDesc },
+        video_url: { type: 'string', description: 'Public URL to an MP4 (H.264/AAC). Aspect ratio 4:5 to 16:9 for feed, up to 60 minutes.' },
+        caption: { type: 'string', description: 'Optional caption' },
+        cover_url: { type: 'string', description: 'Optional public URL to a JPEG cover thumbnail' },
+      },
+      required: ['account', 'video_url'],
+    },
+  },
+  {
+    name: 'publish_reel',
+    description: 'Publish a Reel. video_url must be a publicly accessible MP4. Async: waits up to 90s for Meta to process the upload.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        account: { type: 'string', description: accountDesc },
+        video_url: { type: 'string', description: 'Public URL to an MP4. 9:16 aspect, up to 90 seconds, H.264/AAC, 30fps recommended.' },
+        caption: { type: 'string', description: 'Optional caption' },
+        cover_url: { type: 'string', description: 'Optional public URL to a JPEG cover thumbnail' },
+        share_to_feed: { type: 'boolean', description: 'Also share to feed (default true)' },
+      },
+      required: ['account', 'video_url'],
+    },
+  },
+  {
+    name: 'publish_story',
+    description: 'Publish a Story (image or video). Exactly one of image_url or video_url is required. Video stories are async (waits up to 90s).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        account: { type: 'string', description: accountDesc },
+        image_url: { type: 'string', description: 'Public URL to a JPEG/PNG. 9:16 aspect recommended.' },
+        video_url: { type: 'string', description: 'Public URL to an MP4. 9:16 aspect, up to 60 seconds for stories.' },
+      },
+      required: ['account'],
+    },
+  },
+  {
+    name: 'get_post_insights',
+    description: 'Get insights (metrics) for a specific post, reel, or video. Defaults to a cross-media-type metric set.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        account: { type: 'string', description: accountDesc },
+        post_id: { type: 'string', description: 'IG media ID' },
+        metrics: { type: 'array', items: { type: 'string' }, description: 'Optional list of metrics to request. Defaults to reach, impressions, saved, likes, comments, shares, total_interactions.' },
+      },
+      required: ['account', 'post_id'],
+    },
+  },
+  {
+    name: 'get_account_insights',
+    description: 'Get insights (metrics) for the account itself, over a time window. Defaults to reach, profile_views, follower_count, website_clicks.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        account: { type: 'string', description: accountDesc },
+        metrics: { type: 'array', items: { type: 'string' }, description: 'Optional list of metrics. Default: reach, profile_views, follower_count, website_clicks.' },
+        period: { type: 'string', description: 'day, week, days_28. Default: day.' },
+        metric_type: { type: 'string', description: 'Optional metric_type (e.g. total_value) required by some v18+ metrics.' },
+        since: { type: 'string', description: 'Optional Unix timestamp lower bound' },
+        until: { type: 'string', description: 'Optional Unix timestamp upper bound' },
+      },
+      required: ['account'],
+    },
+  },
 ];
 
 // ─── Server ───────────────────────────────────────────────────────────────────
 
 const server = new Server(
-  { name: 'ouroboros-mcp', version: '1.1.0' },
+  { name: 'ouroboros-mcp', version: '1.2.0' },
   { capabilities: { tools: {} } }
 );
 
@@ -299,6 +476,11 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       case 'send_message':      result = await sendMessage(args.account, args.recipient_id, args.message); break;
       case 'get_post_comments': result = await getPostComments(args.account, args.post_id); break;
       case 'reply_to_comment':  result = await replyToComment(args.account, args.comment_id, args.message); break;
+      case 'publish_video':     result = await publishVideo(args.account, args.video_url, args.caption, args.cover_url); break;
+      case 'publish_reel':      result = await publishReel(args.account, args.video_url, args.caption, args.cover_url, args.share_to_feed); break;
+      case 'publish_story':     result = await publishStory(args.account, { imageUrl: args.image_url, videoUrl: args.video_url }); break;
+      case 'get_post_insights': result = await getPostInsights(args.account, args.post_id, args.metrics); break;
+      case 'get_account_insights': result = await getAccountInsights(args.account, { metrics: args.metrics, period: args.period, metric_type: args.metric_type, since: args.since, until: args.until }); break;
       default: throw new Error(`Unknown tool: ${name}`);
     }
     return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
