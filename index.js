@@ -3,40 +3,61 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
-const GRAPH_API_BASE = 'https://graph.instagram.com/v21.0';
+const GRAPH_API_BASE   = 'https://graph.instagram.com/v21.0';
+const THREADS_API_BASE = 'https://graph.threads.net/v1.0';
 
-// Load accounts dynamically from env vars.
-// INSTAGRAM_ACCOUNTS=koda,emrah
-// INSTAGRAM_KODA_TOKEN=... INSTAGRAM_KODA_USER_ID=...
-function loadAccounts() {
-  const keys = (process.env.INSTAGRAM_ACCOUNTS || '').split(',').map(k => k.trim()).filter(Boolean);
-  if (!keys.length) throw new Error('INSTAGRAM_ACCOUNTS env var is not set.');
-  const accounts = {};
-  for (const key of keys) {
-    const upper = key.toUpperCase();
-    accounts[key] = {
-      label: key,
-      accessToken: process.env[`INSTAGRAM_${upper}_TOKEN`],
-      userId: process.env[`INSTAGRAM_${upper}_USER_ID`],
-    };
-  }
-  return accounts;
+// Load account keys from env. ACCOUNTS is platform-neutral and preferred;
+// INSTAGRAM_ACCOUNTS is the legacy fallback (kept so existing installs keep working).
+// Per-platform credentials are looked up lazily per call:
+//   INSTAGRAM_{KEY}_TOKEN / INSTAGRAM_{KEY}_USER_ID
+//   THREADS_{KEY}_TOKEN   / THREADS_{KEY}_USER_ID
+function loadAccountKeys() {
+  const raw = process.env.ACCOUNTS || process.env.INSTAGRAM_ACCOUNTS || '';
+  const keys = raw.split(',').map(k => k.trim()).filter(Boolean);
+  if (!keys.length) throw new Error('Set ACCOUNTS (or legacy INSTAGRAM_ACCOUNTS) env var with a comma-separated list of account keys.');
+  return keys;
 }
 
-const ACCOUNTS = loadAccounts();
+const ACCOUNT_KEYS = loadAccountKeys();
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function getAccount(key) {
-  const account = ACCOUNTS[key];
-  if (!account) throw new Error(`Unknown account "${key}". Configured accounts: ${Object.keys(ACCOUNTS).join(', ')}.`);
-  if (!account.accessToken || !account.userId)
-    throw new Error(`Missing credentials for "${key}". Set INSTAGRAM_${key.toUpperCase()}_TOKEN and INSTAGRAM_${key.toUpperCase()}_USER_ID.`);
-  return account;
+  if (!ACCOUNT_KEYS.includes(key)) {
+    throw new Error(`Unknown account "${key}". Configured accounts: ${ACCOUNT_KEYS.join(', ')}.`);
+  }
+  const upper = key.toUpperCase();
+  const accessToken = process.env[`INSTAGRAM_${upper}_TOKEN`];
+  const userId      = process.env[`INSTAGRAM_${upper}_USER_ID`];
+  if (!accessToken || !userId) {
+    throw new Error(`Missing Instagram credentials for "${key}". Set INSTAGRAM_${upper}_TOKEN and INSTAGRAM_${upper}_USER_ID.`);
+  }
+  return { label: key, accessToken, userId };
+}
+
+function getThreadsAccount(key) {
+  if (!ACCOUNT_KEYS.includes(key)) {
+    throw new Error(`Unknown account "${key}". Configured accounts: ${ACCOUNT_KEYS.join(', ')}.`);
+  }
+  const upper = key.toUpperCase();
+  const accessToken = process.env[`THREADS_${upper}_TOKEN`];
+  const userId      = process.env[`THREADS_${upper}_USER_ID`];
+  if (!accessToken || !userId) {
+    throw new Error(`Missing Threads credentials for "${key}". Set THREADS_${upper}_TOKEN and THREADS_${upper}_USER_ID.`);
+  }
+  return { label: key, accessToken, userId };
 }
 
 async function graph(endpoint, method = 'GET', params = {}) {
-  const url = new URL(`${GRAPH_API_BASE}${endpoint}`);
+  return apiCall(GRAPH_API_BASE, endpoint, method, params);
+}
+
+async function threadsGraph(endpoint, method = 'GET', params = {}) {
+  return apiCall(THREADS_API_BASE, endpoint, method, params);
+}
+
+async function apiCall(base, endpoint, method, params) {
+  const url = new URL(`${base}${endpoint}`);
   const options = { method };
 
   if (method === 'GET' || method === 'DELETE') {
@@ -48,7 +69,7 @@ async function graph(endpoint, method = 'GET', params = {}) {
 
   const res = await fetch(url.toString(), options);
   const data = await res.json();
-  if (data.error) throw new Error(`Graph API: ${data.error.message} (code ${data.error.code})`);
+  if (data.error) throw new Error(`${base.includes('threads') ? 'Threads API' : 'Graph API'}: ${data.error.message} (code ${data.error.code})`);
   return data;
 }
 
@@ -314,10 +335,170 @@ async function getAccountInsights(key, { metrics, period = 'day', metric_type, s
   return graph(`/${userId}/insights`, 'GET', params);
 }
 
+// ─── Threads ──────────────────────────────────────────────────────────────────
+
+async function waitForThreadsContainer(creationId, accessToken, { maxWaitMs = 90000, pollMs = 3000 } = {}) {
+  const start = Date.now();
+  let last;
+  while (Date.now() - start < maxWaitMs) {
+    last = await threadsGraph(`/${creationId}`, 'GET', {
+      fields: 'status,error_message',
+      access_token: accessToken,
+    });
+    if (last.status === 'FINISHED' || last.status === 'PUBLISHED') return last;
+    if (last.status === 'ERROR' || last.status === 'EXPIRED') {
+      throw new Error(`Threads container ${last.status}: ${last.error_message || 'no detail'}`);
+    }
+    await new Promise(r => setTimeout(r, pollMs));
+  }
+  throw new Error(`Threads container did not finish within ${maxWaitMs / 1000}s. Last status: ${last && last.status}`);
+}
+
+async function threadsGetAccount(key) {
+  const { accessToken, userId, label } = getThreadsAccount(key);
+  const data = await threadsGraph(`/${userId}`, 'GET', {
+    fields: 'id,username,name,threads_profile_picture_url,threads_biography',
+    access_token: accessToken,
+  });
+  return { account: label, ...data };
+}
+
+async function threadsGetRecent(key, limit = 10) {
+  const { accessToken, userId } = getThreadsAccount(key);
+  return threadsGraph(`/${userId}/threads`, 'GET', {
+    fields: 'id,media_type,media_url,permalink,owner,username,text,timestamp,shortcode,is_quote_post,has_replies,is_reply,reply_audience',
+    limit,
+    access_token: accessToken,
+  });
+}
+
+async function threadsGetPost(key, threadId) {
+  const { accessToken } = getThreadsAccount(key);
+  return threadsGraph(`/${threadId}`, 'GET', {
+    fields: 'id,media_type,media_url,permalink,owner,username,text,timestamp,shortcode,is_quote_post,has_replies,root_post,replied_to,is_reply,reply_audience',
+    access_token: accessToken,
+  });
+}
+
+async function threadsGetReplies(key, threadId, { conversation = false } = {}) {
+  const { accessToken } = getThreadsAccount(key);
+  const edge = conversation ? 'conversation' : 'replies';
+  return threadsGraph(`/${threadId}/${edge}`, 'GET', {
+    fields: 'id,text,username,timestamp,media_type,media_url,permalink,is_reply,replied_to,has_replies,root_post,hide_status',
+    access_token: accessToken,
+  });
+}
+
+// Internal: build a single (non-carousel-item) thread and publish it.
+async function publishThread(key, { text, imageUrl, videoUrl, replyToId, replyControl, altText, linkAttachment } = {}) {
+  const { accessToken, userId } = getThreadsAccount(key);
+  if (!text && !imageUrl && !videoUrl) throw new Error('Threads publish needs at least text, image_url, or video_url.');
+  if (imageUrl && videoUrl) throw new Error('Provide image_url OR video_url, not both. Use threads_publish_carousel for multi-media.');
+
+  let mediaType = 'TEXT';
+  const params = { access_token: accessToken };
+  if (imageUrl) {
+    mediaType = 'IMAGE';
+    params.image_url = imageUrl;
+  } else if (videoUrl) {
+    mediaType = 'VIDEO';
+    params.video_url = videoUrl;
+  }
+  params.media_type = mediaType;
+  if (text) params.text = text;
+  if (replyToId) params.reply_to_id = replyToId;
+  if (replyControl) params.reply_control = replyControl;
+  if (altText) params.alt_text = altText;
+  if (linkAttachment) params.link_attachment = linkAttachment;
+
+  const container = await threadsGraph(`/${userId}/threads`, 'POST', params);
+  // Video needs processing; image and text generally don't, but the publish step still polls server-side.
+  if (videoUrl) await waitForThreadsContainer(container.id, accessToken);
+  const result = await threadsGraph(`/${userId}/threads_publish`, 'POST', {
+    creation_id: container.id,
+    access_token: accessToken,
+  });
+  return { success: true, post_id: result.id, type: mediaType.toLowerCase(), text: text || null, reply_to_id: replyToId || null };
+}
+
+async function threadsPublish(key, args) {
+  return publishThread(key, args);
+}
+
+async function threadsReply(key, { replyToId, text, imageUrl, videoUrl, replyControl }) {
+  if (!replyToId) throw new Error('reply_to_id is required for threads_reply.');
+  return publishThread(key, { text, imageUrl, videoUrl, replyToId, replyControl });
+}
+
+async function threadsPublishCarousel(key, { items, text, replyToId, replyControl }) {
+  const { accessToken, userId } = getThreadsAccount(key);
+  if (!items || items.length < 2) throw new Error('threads_publish_carousel needs at least 2 items.');
+  if (items.length > 20) throw new Error('Threads carousels accept up to 20 items.');
+
+  // Step 1: build a container for each item with is_carousel_item: true
+  const childIds = [];
+  for (const item of items) {
+    if (!item.url) throw new Error('Each carousel item needs a url.');
+    const itemType = (item.type || 'image').toLowerCase();
+    if (!['image', 'video'].includes(itemType)) throw new Error(`Carousel item type must be image or video. Got: ${item.type}`);
+    const params = {
+      is_carousel_item: true,
+      media_type: itemType.toUpperCase(),
+      access_token: accessToken,
+    };
+    if (itemType === 'image') params.image_url = item.url;
+    else params.video_url = item.url;
+    if (item.alt_text) params.alt_text = item.alt_text;
+    const child = await threadsGraph(`/${userId}/threads`, 'POST', params);
+    if (itemType === 'video') await waitForThreadsContainer(child.id, accessToken);
+    childIds.push(child.id);
+  }
+
+  // Step 2: build the carousel container
+  const carouselParams = {
+    media_type: 'CAROUSEL',
+    children: childIds.join(','),
+    access_token: accessToken,
+  };
+  if (text) carouselParams.text = text;
+  if (replyToId) carouselParams.reply_to_id = replyToId;
+  if (replyControl) carouselParams.reply_control = replyControl;
+  const carousel = await threadsGraph(`/${userId}/threads`, 'POST', carouselParams);
+
+  // Step 3: publish
+  const result = await threadsGraph(`/${userId}/threads_publish`, 'POST', {
+    creation_id: carousel.id,
+    access_token: accessToken,
+  });
+  return { success: true, post_id: result.id, type: 'carousel', item_count: items.length, text: text || null, reply_to_id: replyToId || null };
+}
+
+async function threadsGetPostInsights(key, threadId, metrics) {
+  const { accessToken } = getThreadsAccount(key);
+  const metric = metrics && metrics.length
+    ? metrics.join(',')
+    : 'views,likes,replies,reposts,quotes,shares';
+  return threadsGraph(`/${threadId}/insights`, 'GET', {
+    metric,
+    access_token: accessToken,
+  });
+}
+
+async function threadsGetAccountInsights(key, { metrics, since, until } = {}) {
+  const { accessToken, userId } = getThreadsAccount(key);
+  const metric = metrics && metrics.length
+    ? metrics.join(',')
+    : 'views,likes,replies,reposts,quotes,followers_count';
+  const params = { metric, access_token: accessToken };
+  if (since) params.since = since;
+  if (until) params.until = until;
+  return threadsGraph(`/${userId}/threads_insights`, 'GET', params);
+}
+
 // ─── Tool definitions ─────────────────────────────────────────────────────────
 
-const accountNames = Object.keys(ACCOUNTS).join(', ');
-const accountDesc = `Account key as defined in INSTAGRAM_ACCOUNTS (configured: ${accountNames})`;
+const accountNames = ACCOUNT_KEYS.join(', ');
+const accountDesc = `Account key as defined in ACCOUNTS env var (configured: ${accountNames})`;
 
 const TOOLS = [
   {
@@ -558,12 +739,151 @@ const TOOLS = [
       required: ['account', 'comment_id'],
     },
   },
+
+  // ─── Threads ────────────────────────────────────────────────────────────────
+
+  {
+    name: 'threads_get_account',
+    description: 'Get Threads profile info (id, username, name, profile picture, biography). Requires THREADS_{KEY}_TOKEN and THREADS_{KEY}_USER_ID.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        account: { type: 'string', description: accountDesc },
+      },
+      required: ['account'],
+    },
+  },
+  {
+    name: 'threads_get_recent',
+    description: 'Get recent threads (posts) from the authenticated Threads account.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        account: { type: 'string', description: accountDesc },
+        limit: { type: 'number', description: 'Number of threads to return (default 10)' },
+      },
+      required: ['account'],
+    },
+  },
+  {
+    name: 'threads_get_post',
+    description: 'Get full details for a single thread by ID, including reply chain context.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        account: { type: 'string', description: accountDesc },
+        thread_id: { type: 'string', description: 'Threads media ID' },
+      },
+      required: ['account', 'thread_id'],
+    },
+  },
+  {
+    name: 'threads_get_replies',
+    description: 'Get replies to a specific thread. Pass conversation=true for the full conversation tree instead of direct replies only.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        account: { type: 'string', description: accountDesc },
+        thread_id: { type: 'string', description: 'Threads media ID to fetch replies for' },
+        conversation: { type: 'boolean', description: 'true for full conversation tree, false (default) for direct replies only' },
+      },
+      required: ['account', 'thread_id'],
+    },
+  },
+  {
+    name: 'threads_publish',
+    description: 'Publish a thread. Text-only, image, or video. Provide text alone, or text plus exactly one of image_url or video_url. Video posts wait for Meta to process.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        account: { type: 'string', description: accountDesc },
+        text: { type: 'string', description: 'Post text. Up to 500 characters.' },
+        image_url: { type: 'string', description: 'Public URL to a JPEG/PNG (optional)' },
+        video_url: { type: 'string', description: 'Public URL to an MP4 (optional, mutually exclusive with image_url)' },
+        reply_to_id: { type: 'string', description: 'Optional. If set, this post becomes a reply to the given thread. Prefer threads_reply for clarity.' },
+        reply_control: { type: 'string', enum: ['everyone', 'accounts_you_follow', 'mentioned_only'], description: 'Who can reply. Default: everyone.' },
+        alt_text: { type: 'string', description: 'Optional accessibility alt text for the image' },
+        link_attachment: { type: 'string', description: 'Optional URL to attach as a link preview (text-only posts)' },
+      },
+      required: ['account'],
+    },
+  },
+  {
+    name: 'threads_publish_carousel',
+    description: 'Publish a Threads carousel: 2 to 20 image/video items with optional shared text.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        account: { type: 'string', description: accountDesc },
+        items: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              type: { type: 'string', enum: ['image', 'video'], description: 'image or video' },
+              url: { type: 'string', description: 'Public URL to the media' },
+              alt_text: { type: 'string', description: 'Optional alt text' },
+            },
+            required: ['url'],
+          },
+          description: '2 to 20 carousel items',
+        },
+        text: { type: 'string', description: 'Optional caption shared across the carousel' },
+        reply_to_id: { type: 'string', description: 'Optional reply target' },
+        reply_control: { type: 'string', enum: ['everyone', 'accounts_you_follow', 'mentioned_only'], description: 'Who can reply' },
+      },
+      required: ['account', 'items'],
+    },
+  },
+  {
+    name: 'threads_reply',
+    description: 'Reply to a thread. Same shape as threads_publish but reply_to_id is required.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        account: { type: 'string', description: accountDesc },
+        reply_to_id: { type: 'string', description: 'Thread ID to reply to' },
+        text: { type: 'string', description: 'Reply text' },
+        image_url: { type: 'string', description: 'Optional image URL' },
+        video_url: { type: 'string', description: 'Optional video URL (mutually exclusive with image_url)' },
+        reply_control: { type: 'string', enum: ['everyone', 'accounts_you_follow', 'mentioned_only'], description: 'Who can reply to this reply' },
+      },
+      required: ['account', 'reply_to_id'],
+    },
+  },
+  {
+    name: 'threads_get_post_insights',
+    description: 'Get insights for a specific thread. Defaults to views, likes, replies, reposts, quotes, shares.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        account: { type: 'string', description: accountDesc },
+        thread_id: { type: 'string', description: 'Threads media ID' },
+        metrics: { type: 'array', items: { type: 'string' }, description: 'Optional metrics list. Default: views, likes, replies, reposts, quotes, shares.' },
+      },
+      required: ['account', 'thread_id'],
+    },
+  },
+  {
+    name: 'threads_get_account_insights',
+    description: 'Get account-level Threads insights. Defaults to views, likes, replies, reposts, quotes, followers_count.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        account: { type: 'string', description: accountDesc },
+        metrics: { type: 'array', items: { type: 'string' }, description: 'Optional metrics list. Default: views, likes, replies, reposts, quotes, followers_count.' },
+        since: { type: 'string', description: 'Optional Unix timestamp lower bound' },
+        until: { type: 'string', description: 'Optional Unix timestamp upper bound' },
+      },
+      required: ['account'],
+    },
+  },
 ];
 
 // ─── Server ───────────────────────────────────────────────────────────────────
 
 const server = new Server(
-  { name: 'ouroboros-mcp', version: '1.3.1' },
+  { name: 'ouroboros-mcp', version: '1.4.0' },
   { capabilities: { tools: {} } }
 );
 
@@ -592,6 +912,15 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       case 'search_hashtag':    result = await searchHashtag(args.account, args.hashtag, { sort: args.sort, limit: args.limit }); break;
       case 'hide_comment':      result = await hideComment(args.account, args.comment_id, args.hide !== false); break;
       case 'delete_comment':    result = await deleteComment(args.account, args.comment_id); break;
+      case 'threads_get_account':           result = await threadsGetAccount(args.account); break;
+      case 'threads_get_recent':            result = await threadsGetRecent(args.account, args.limit); break;
+      case 'threads_get_post':              result = await threadsGetPost(args.account, args.thread_id); break;
+      case 'threads_get_replies':           result = await threadsGetReplies(args.account, args.thread_id, { conversation: args.conversation }); break;
+      case 'threads_publish':               result = await threadsPublish(args.account, { text: args.text, imageUrl: args.image_url, videoUrl: args.video_url, replyToId: args.reply_to_id, replyControl: args.reply_control, altText: args.alt_text, linkAttachment: args.link_attachment }); break;
+      case 'threads_publish_carousel':      result = await threadsPublishCarousel(args.account, { items: args.items, text: args.text, replyToId: args.reply_to_id, replyControl: args.reply_control }); break;
+      case 'threads_reply':                 result = await threadsReply(args.account, { replyToId: args.reply_to_id, text: args.text, imageUrl: args.image_url, videoUrl: args.video_url, replyControl: args.reply_control }); break;
+      case 'threads_get_post_insights':     result = await threadsGetPostInsights(args.account, args.thread_id, args.metrics); break;
+      case 'threads_get_account_insights':  result = await threadsGetAccountInsights(args.account, { metrics: args.metrics, since: args.since, until: args.until }); break;
       default: throw new Error(`Unknown tool: ${name}`);
     }
     return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
