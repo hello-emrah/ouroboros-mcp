@@ -5,26 +5,33 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 
 const GRAPH_API_BASE = 'https://graph.facebook.com/v21.0';
 
-const ACCOUNTS = {
-  koda: {
-    label: '@koda.moss',
-    accessToken: process.env.KODA_ACCESS_TOKEN,
-    userId: process.env.KODA_USER_ID,
-  },
-  emrah: {
-    label: '@hello_Emrah',
-    accessToken: process.env.EMRAH_ACCESS_TOKEN,
-    userId: process.env.EMRAH_USER_ID,
-  },
-};
+// Load accounts dynamically from env vars.
+// INSTAGRAM_ACCOUNTS=koda,emrah
+// INSTAGRAM_KODA_TOKEN=... INSTAGRAM_KODA_USER_ID=...
+function loadAccounts() {
+  const keys = (process.env.INSTAGRAM_ACCOUNTS || '').split(',').map(k => k.trim()).filter(Boolean);
+  if (!keys.length) throw new Error('INSTAGRAM_ACCOUNTS env var is not set.');
+  const accounts = {};
+  for (const key of keys) {
+    const upper = key.toUpperCase();
+    accounts[key] = {
+      label: key,
+      accessToken: process.env[`INSTAGRAM_${upper}_TOKEN`],
+      userId: process.env[`INSTAGRAM_${upper}_USER_ID`],
+    };
+  }
+  return accounts;
+}
+
+const ACCOUNTS = loadAccounts();
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function getAccount(key) {
   const account = ACCOUNTS[key];
-  if (!account) throw new Error(`Unknown account "${key}". Use "koda" or "emrah".`);
+  if (!account) throw new Error(`Unknown account "${key}". Configured accounts: ${Object.keys(ACCOUNTS).join(', ')}.`);
   if (!account.accessToken || !account.userId)
-    throw new Error(`Missing credentials for "${key}". Check KODA_* or EMRAH_* env vars.`);
+    throw new Error(`Missing credentials for "${key}". Set INSTAGRAM_${key.toUpperCase()}_TOKEN and INSTAGRAM_${key.toUpperCase()}_USER_ID.`);
   return account;
 }
 
@@ -147,6 +154,9 @@ async function replyToComment(key, commentId, message) {
 
 // ─── Tool definitions ─────────────────────────────────────────────────────────
 
+const accountNames = Object.keys(ACCOUNTS).join(', ');
+const accountDesc = `Account key as defined in INSTAGRAM_ACCOUNTS (configured: ${accountNames})`;
+
 const TOOLS = [
   {
     name: 'get_account_info',
@@ -154,7 +164,7 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        account: { type: 'string', enum: ['koda', 'emrah'], description: '"koda" = @koda.moss, "emrah" = @hello_Emrah' },
+        account: { type: 'string', description: accountDesc },
       },
       required: ['account'],
     },
@@ -165,7 +175,7 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        account: { type: 'string', enum: ['koda', 'emrah'] },
+        account: { type: 'string', description: accountDesc },
         limit: { type: 'number', description: 'Number of posts (default 10, max 100)' },
       },
       required: ['account'],
@@ -177,7 +187,7 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        account: { type: 'string', enum: ['koda', 'emrah'] },
+        account: { type: 'string', description: accountDesc },
         image_url: { type: 'string', description: 'Publicly accessible image URL' },
         caption: { type: 'string', description: 'Post caption' },
       },
@@ -190,7 +200,7 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        account: { type: 'string', enum: ['koda', 'emrah'] },
+        account: { type: 'string', description: accountDesc },
         image_urls: {
           type: 'array',
           items: { type: 'string' },
@@ -209,7 +219,7 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        account: { type: 'string', enum: ['koda', 'emrah'] },
+        account: { type: 'string', description: accountDesc },
       },
       required: ['account'],
     },
@@ -220,7 +230,7 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        account: { type: 'string', enum: ['koda', 'emrah'] },
+        account: { type: 'string', description: accountDesc },
         conversation_id: { type: 'string', description: 'Conversation ID from get_conversations' },
       },
       required: ['account', 'conversation_id'],
@@ -232,7 +242,7 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        account: { type: 'string', enum: ['koda', 'emrah'] },
+        account: { type: 'string', description: accountDesc },
         recipient_id: { type: 'string', description: 'Instagram user ID of the recipient' },
         message: { type: 'string', description: 'Message text' },
       },
@@ -245,7 +255,7 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        account: { type: 'string', enum: ['koda', 'emrah'] },
+        account: { type: 'string', description: accountDesc },
         post_id: { type: 'string', description: 'Post ID' },
       },
       required: ['account', 'post_id'],
@@ -257,7 +267,7 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        account: { type: 'string', enum: ['koda', 'emrah'] },
+        account: { type: 'string', description: accountDesc },
         comment_id: { type: 'string', description: 'Comment ID to reply to' },
         message: { type: 'string', description: 'Reply text' },
       },
