@@ -102,6 +102,12 @@ All tools take an `account` parameter matching one of your configured account ke
 - DM sending requires `instagram_manage_messages` — works in dev mode for accounts added as app testers, requires Meta app review for general use
 - Long-lived tokens expire after 60 days and need to be refreshed
 
+## Support
+
+Open-source, shared openly. If this saved you time:
+
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-c46b44?logo=buymeacoffee&logoColor=ffffff&style=for-the-badge)](https://buymeacoffee.com/hello_emrah)
+
 ## License
 
 MIT
