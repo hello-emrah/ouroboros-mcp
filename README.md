@@ -21,8 +21,8 @@
 
 The serpent eats her tail. The platform's content cycle is endless and so is the rhythm of working it: post, reply, monitor, post again. Ouroboros wraps Meta's Graph API so the cycle runs through Claude Code instead of a browser tab and a phone. The lotus crown on the mark is the reminder: you sit above the loop, not inside it.
 
-> [!important] **URLs, not local files.**
-> Meta's publishing endpoints (both Instagram and Threads) do not accept local file uploads. Every `publish_*` and `threads_publish*` tool takes a **publicly accessible URL** as input. Host your media somewhere reachable (S3, Cloudflare R2, your own CDN, a public bucket) and pass the URL. This is a Meta limitation, not an Ouroboros one. If your asset is on disk, upload it to a host first.
+> [!IMPORTANT]
+> **URLs, not local files.** Meta's publishing endpoints (Instagram, Threads, and Facebook Pages) do not accept local file uploads. Every `publish_*`, `threads_publish*`, and `facebook_publish` tool takes a **publicly accessible URL** as input. Host your media somewhere reachable (S3, Cloudflare R2, your own CDN, a public bucket) and pass the URL. This is a Meta limitation, not an Ouroboros one. If your asset is on disk, upload it to a host first.
 
 ## Features
 
