@@ -39,7 +39,7 @@ async function graph(endpoint, method = 'GET', params = {}) {
   const url = new URL(`${GRAPH_API_BASE}${endpoint}`);
   const options = { method };
 
-  if (method === 'GET') {
+  if (method === 'GET' || method === 'DELETE') {
     Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, String(v)));
   } else {
     options.headers = { 'Content-Type': 'application/json' };
@@ -240,6 +240,57 @@ async function getPostInsights(key, postId, metrics) {
     metric,
     access_token: accessToken,
   });
+}
+
+// ─── Discovery and moderation ─────────────────────────────────────────────────
+
+async function getTaggedPosts(key, limit = 25) {
+  const { accessToken, userId } = getAccount(key);
+  return graph(`/${userId}/tags`, 'GET', {
+    fields: 'id,caption,media_type,media_url,thumbnail_url,permalink,username,timestamp',
+    limit,
+    access_token: accessToken,
+  });
+}
+
+async function searchHashtag(key, hashtag, { sort = 'top', limit = 25 } = {}) {
+  const { accessToken, userId } = getAccount(key);
+  const clean = hashtag.replace(/^#/, '');
+  const search = await graph(`/ig_hashtag_search`, 'GET', {
+    user_id: userId,
+    q: clean,
+    access_token: accessToken,
+  });
+  if (!search.data || !search.data.length) {
+    return { hashtag: clean, results: [] };
+  }
+  const hashtagId = search.data[0].id;
+  const edge = sort === 'recent' ? 'recent_media' : 'top_media';
+  const media = await graph(`/${hashtagId}/${edge}`, 'GET', {
+    user_id: userId,
+    fields: 'id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,like_count,comments_count',
+    limit,
+    access_token: accessToken,
+  });
+  return { hashtag: clean, hashtag_id: hashtagId, sort, ...media };
+}
+
+async function hideComment(key, commentId, hide = true) {
+  const { accessToken } = getAccount(key);
+  // The hide endpoint expects the param on the URL even on POST
+  const url = new URL(`${GRAPH_API_BASE}/${commentId}`);
+  url.searchParams.set('hide', String(hide));
+  url.searchParams.set('access_token', accessToken);
+  const res = await fetch(url.toString(), { method: 'POST' });
+  const data = await res.json();
+  if (data.error) throw new Error(`Graph API: ${data.error.message} (code ${data.error.code})`);
+  return { success: true, comment_id: commentId, hidden: hide, ...data };
+}
+
+async function deleteComment(key, commentId) {
+  const { accessToken } = getAccount(key);
+  const data = await graph(`/${commentId}`, 'DELETE', { access_token: accessToken });
+  return { success: true, comment_id: commentId, ...data };
 }
 
 async function getAccountInsights(key, { metrics, period = 'day', metric_type, since, until } = {}) {
@@ -451,12 +502,63 @@ const TOOLS = [
       required: ['account'],
     },
   },
+  {
+    name: 'get_tagged_posts',
+    description: 'Get posts that have tagged this Instagram account (UGC pickup). Returns media items where the account is photo-tagged.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        account: { type: 'string', description: accountDesc },
+        limit: { type: 'number', description: 'Number of posts to return (default 25)' },
+      },
+      required: ['account'],
+    },
+  },
+  {
+    name: 'search_hashtag',
+    description: 'Search a hashtag and return its top or recent media. Two-step under the hood (search → posts). NOTE: Meta caps unique hashtag searches at 30 per account per 7 days, so use deliberately.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        account: { type: 'string', description: accountDesc },
+        hashtag: { type: 'string', description: 'Hashtag to search (with or without leading #)' },
+        sort: { type: 'string', enum: ['top', 'recent'], description: 'top or recent. Default: top.' },
+        limit: { type: 'number', description: 'Number of posts to return (default 25)' },
+      },
+      required: ['account', 'hashtag'],
+    },
+  },
+  {
+    name: 'hide_comment',
+    description: 'Hide (or unhide) a comment. Hidden comments stay attached to the post but are not visible to the public.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        account: { type: 'string', description: accountDesc },
+        comment_id: { type: 'string', description: 'IG comment ID to hide or unhide' },
+        hide: { type: 'boolean', description: 'true to hide (default), false to unhide' },
+      },
+      required: ['account', 'comment_id'],
+    },
+  },
+  {
+    name: 'delete_comment',
+    description: 'Permanently delete a comment. This action cannot be undone. Use hide_comment first if reversibility matters.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        account: { type: 'string', description: accountDesc },
+        comment_id: { type: 'string', description: 'IG comment ID to delete' },
+      },
+      required: ['account', 'comment_id'],
+    },
+  },
 ];
 
 // ─── Server ───────────────────────────────────────────────────────────────────
 
 const server = new Server(
-  { name: 'ouroboros-mcp', version: '1.2.0' },
+  { name: 'ouroboros-mcp', version: '1.3.0' },
   { capabilities: { tools: {} } }
 );
 
@@ -481,6 +583,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       case 'publish_story':     result = await publishStory(args.account, { imageUrl: args.image_url, videoUrl: args.video_url }); break;
       case 'get_post_insights': result = await getPostInsights(args.account, args.post_id, args.metrics); break;
       case 'get_account_insights': result = await getAccountInsights(args.account, { metrics: args.metrics, period: args.period, metric_type: args.metric_type, since: args.since, until: args.until }); break;
+      case 'get_tagged_posts':  result = await getTaggedPosts(args.account, args.limit); break;
+      case 'search_hashtag':    result = await searchHashtag(args.account, args.hashtag, { sort: args.sort, limit: args.limit }); break;
+      case 'hide_comment':      result = await hideComment(args.account, args.comment_id, args.hide !== false); break;
+      case 'delete_comment':    result = await deleteComment(args.account, args.comment_id); break;
       default: throw new Error(`Unknown tool: ${name}`);
     }
     return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };

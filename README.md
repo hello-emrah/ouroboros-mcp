@@ -6,7 +6,8 @@
 
 <p align="center">
   An MCP server for the Instagram Graph API.<br/>
-  Photos, carousels, Reels, Stories, video. DMs. Comments. Insights.<br/>
+  Photos, carousels, Reels, Stories, video. DMs. Comments and moderation.<br/>
+  Insights. Tagged posts. Hashtag search.<br/>
   Across multiple accounts.<br/>
   <strong>The endless loop, on your terms.</strong>
 </p>
@@ -26,8 +27,9 @@ The serpent eats her tail. The platform's content cycle is endless and so is the
 
 - Publish **photos**, **carousels**, **Reels**, **Stories**, and **feed video**
 - Read and send **DMs**
-- Read and reply to **comments**
+- Read, reply, **hide**, and **delete** **comments**
 - Pull **post insights** (per-post metrics) and **account insights** (account-level metrics)
+- Discover **tagged posts** (UGC pickup) and **search hashtags** (top or recent media)
 - Fetch account info and recent posts
 - **Multi-account support**, configure any number of accounts via env vars, no code changes
 
@@ -105,7 +107,7 @@ Restart Claude Code. Tools appear under the `mcp__ouroboros__*` namespace.
 
 ## Tools
 
-Fourteen tools across publishing, messaging, comments, and insights. All take an `account` parameter matching one of your configured account keys.
+Eighteen tools across account, publishing, comments and DMs, insights, and discovery. All take an `account` parameter matching one of your configured account keys.
 
 ### Account
 
@@ -131,6 +133,8 @@ Fourteen tools across publishing, messaging, comments, and insights. All take an
 |---|---|
 | `get_post_comments` | Comments on a post, including replies |
 | `reply_to_comment` | Reply to a specific comment |
+| `hide_comment` | Hide (or unhide) a comment |
+| `delete_comment` | Permanently delete a comment |
 | `get_conversations` | List DM conversations |
 | `get_messages` | Messages within a conversation |
 | `send_message` | Send a DM to a user |
@@ -141,6 +145,13 @@ Fourteen tools across publishing, messaging, comments, and insights. All take an
 |---|---|
 | `get_post_insights` | Per-post metrics (reach, impressions, saved, likes, comments, shares, total interactions) |
 | `get_account_insights` | Account-level metrics over a window (also listed under Account) |
+
+### Discovery
+
+| Tool | Description |
+|---|---|
+| `get_tagged_posts` | Posts that tagged this account (UGC pickup) |
+| `search_hashtag` | Top or recent media for a given hashtag. **Rate limited: 30 unique hashtag searches per account per 7 days.** |
 
 ## Format and size constraints
 
